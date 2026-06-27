@@ -1,0 +1,12 @@
+bin/
+obj/
+*.user
+*.suo
+*.ide
+*.swp
+*.swo
+*~
+.DS_Store
+.vs/
+.vscode/
+packages/
