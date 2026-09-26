@@ -21,8 +21,15 @@ public sealed class SpeedLimitUnlockerSettings
     public bool RestoreWhenTargetEqualsLimit { get; set; } = true;
 }
 
-public sealed class SpeedLimitUnlockerPlugin : Plugin, IPluginUi
+public sealed class SpeedLimitUnlockerPlugin : Plugin
 {
+    public static SpeedLimitUnlockerPlugin? Instance { get; private set; }
+
+    public SpeedLimitUnlockerPlugin()
+    {
+        Instance = this;
+    }
+
     private const string SettingsFileName = "SpeedLimitUnlocker.json";
     private const string PluginId = "local.speedlimitunlocker";
 
@@ -41,7 +48,7 @@ public sealed class SpeedLimitUnlockerPlugin : Plugin, IPluginUi
         Id = PluginId,
         Name = "Speed Limit Unlocker",
         Description = "Keeps ETS2LA's ACC target speed from being reset to the road speed limit.",
-        Version = "0.6.0",
+        Version = "0.7.0",
         SupportedETS2LA = "*",
         AuthorName = "local",
         Dependencies = new List<string> { "tumppi066.adaptivecruisecontrol" },
@@ -59,7 +66,6 @@ public sealed class SpeedLimitUnlockerPlugin : Plugin, IPluginUi
 
         Events.Current.Subscribe<GameTelemetryData>(GameTelemetry.Current.EventString, OnTelemetry);
         Events.Current.Subscribe<float>("TelemetryEvents.SpeedLimitChanged", OnSpeedLimitChanged);
-        Events.Current.Subscribe<EventArgs>("ETS2LA.State.AssistsUnpaused", OnAssistsUnpaused);
 
         lock (sync)
         {
@@ -91,8 +97,6 @@ public sealed class SpeedLimitUnlockerPlugin : Plugin, IPluginUi
         lock (sync)
         {
             CaptureExistingTargetIfUseful();
-
-            CaptureExistingTargetIfUseful();
             RestorePreferredTarget();
         }
     }
@@ -102,7 +106,6 @@ public sealed class SpeedLimitUnlockerPlugin : Plugin, IPluginUi
         base.OnDisable();
         Events.Current.Unsubscribe<GameTelemetryData>(GameTelemetry.Current.EventString, OnTelemetry);
         Events.Current.Unsubscribe<float>("TelemetryEvents.SpeedLimitChanged", OnSpeedLimitChanged);
-        Events.Current.Unsubscribe<EventArgs>("ETS2LA.State.AssistsUnpaused", OnAssistsUnpaused);
         settingsHandler?.UnregisterListener<SpeedLimitUnlockerSettings>(SettingsFileName, OnSettingsChanged);
         settingsHandler?.Dispose();
         settingsHandler = null;
@@ -113,82 +116,33 @@ public sealed class SpeedLimitUnlockerPlugin : Plugin, IPluginUi
         OnDisable();
     }
 
-    public IEnumerable<PluginPage> RenderPages()
+    public SpeedLimitUnlockerSettings Settings => settings;
+
+    public bool LimitMaximum => settings.MaximumTargetSpeed < 9999;
+
+    public string SpeedUnitAbbreviation => UnitConversions.GetUnitAbbreviation(UnitType.Speed, ApplicationState.Current.DisplayUnits);
+
+    public Dictionary<string, string> StatusRows
     {
-        Units units = ApplicationState.Current.DisplayUnits;
-        string unit = UnitConversions.GetUnitAbbreviation(UnitType.Speed, units);
-
-        List<UiElement> body = new()
+        get
         {
-            new UiSwitch(
-                "Enabled",
-                "When enabled, speed limit changes no longer pin target speed to the road limit.",
-                settings.Enabled,
-                "enabled"),
-            new UiSlider(
-                $"Default target speed ({unit})",
-                "Used when ETS2LA has only provided a speed-limit target and no higher user target exists yet.",
-                30,
-                9999,
-                1,
-                settings.DefaultTargetSpeed,
-                "defaultTarget"),
-            new UiSwitch(
-                "Limit maximum target speed",
-                "When off, the plugin uses 9999 as the maximum target speed.",
-                settings.MaximumTargetSpeed < 9999,
-                "limitMaximum")
-            ,
-            new UiButton(
-                "Reset target to 9999",
-                "Sets both the default and maximum target speed to 9999.",
-                "resetTarget",
-                Emphasized: true)
-        };
+            Units units = ApplicationState.Current.DisplayUnits;
+            string unit = UnitConversions.GetUnitAbbreviation(UnitType.Speed, units);
 
-        if (settings.MaximumTargetSpeed < 9999)
-        {
-            body.Add(new UiSlider(
-                $"Maximum target speed ({unit})",
-                "The plugin will never restore a target above this value.",
-                30,
-                9999,
-                1,
-                settings.MaximumTargetSpeed,
-                "maximumTarget"));
+            string Preferred() => FormatSpeed(preferredTargetSpeed, units, unit);
+            string Desired() => FormatSpeed(ApplicationState.Current.DesiredSpeed, units, unit);
+            string Limit() => FormatSpeed(BuildEffectiveSpeedLimit(latestTelemetry.truckFloat.speedLimit), units, unit);
+
+            return new Dictionary<string, string>
+            {
+                { "Preferred target", Preferred() },
+                { "Current target", Desired() },
+                { "Road limit", Limit() }
+            };
         }
-        else
-        {
-            body.Add(new UiText("Maximum target speed: 9999", Muted: true));
-        }
-
-        body.AddRange(new UiElement[]
-        {
-            new UiSlider(
-                "Restore delay (ms)",
-                "A short delay lets ETS2LA finish processing the speed-limit event before this plugin restores the target.",
-                0,
-                500,
-                10,
-                settings.RestoreDelayMs,
-                "restoreDelay"),
-            new UiSwitch(
-                "Restore matching limit during ticks",
-                "Also restores when the current target is detected at the current road speed limit.",
-                settings.RestoreWhenTargetEqualsLimit,
-                "restoreMatchingLimit"),
-            BuildStatusTable(units)
-        });
-
-        yield return new PluginPage(
-            "speed-limit-unlocker",
-            PluginPageLocation.Settings,
-            "Speed Limit Unlocker",
-            "Keeps ACC target speed above road speed limits by restoring ETS2LA's global target speed.",
-            body);
     }
 
-    public void OnAction(string actionId, object? value)
+    public void HandleAction(string actionId, object? value)
     {
         switch (actionId)
         {
@@ -322,21 +276,6 @@ public sealed class SpeedLimitUnlockerPlugin : Plugin, IPluginUi
         lock (sync)
         {
             lastSpeedLimit = BuildEffectiveSpeedLimit(speedLimit);
-            EnsurePreferredTarget();
-            IgnoreSpeedLimitTargetCaptureBriefly();
-            ForceRestoreBriefly();
-        }
-
-        _ = RestoreAfterDelayAsync();
-    }
-
-    private void OnAssistsUnpaused(EventArgs eventArgs)
-    {
-        if (!settings.Enabled)
-            return;
-
-        lock (sync)
-        {
             EnsurePreferredTarget();
             IgnoreSpeedLimitTargetCaptureBriefly();
             ForceRestoreBriefly();
@@ -480,25 +419,6 @@ public sealed class SpeedLimitUnlockerPlugin : Plugin, IPluginUi
     private static bool IsNear(float left, float right, float tolerance)
     {
         return right > 0.01f && Math.Abs(left - right) <= tolerance;
-    }
-
-    private UiTable BuildStatusTable(Units units)
-    {
-        string unit = UnitConversions.GetUnitAbbreviation(UnitType.Speed, units);
-
-        string Preferred() => FormatSpeed(preferredTargetSpeed, units, unit);
-        string Desired() => FormatSpeed(ApplicationState.Current.DesiredSpeed, units, unit);
-        string Limit() => FormatSpeed(BuildEffectiveSpeedLimit(latestTelemetry.truckFloat.speedLimit), units, unit);
-
-        return new UiTable(
-            "Status",
-            new[] { "Value", "Speed" },
-            new[]
-            {
-                new[] { "Preferred target", Preferred() },
-                new[] { "Current target", Desired() },
-                new[] { "Road limit", Limit() }
-            });
     }
 
     private static string FormatSpeed(float speed, Units units, string unit)

@@ -1,0 +1,101 @@
+@page "/plugins/adjustments/local.speedlimitunlocker"
+@using ETS2LA.UI.Shared.Components
+@implements IDisposable
+
+<div class="flex flex-col w-108 m-5 ml-8 gap-6">
+    <Separator Label="Speed Limit Unlocker" />
+    <p class="description">Keeps ACC target speed above road speed limits by restoring ETS2LA's global target speed.</p>
+
+    @if (Plugin is null)
+    {
+        <p class="description">Plugin is not loaded.</p>
+    }
+    else
+    {
+        <Switch Title="Enabled"
+                Description="When enabled, speed limit changes no longer pin target speed to the road limit."
+                Value="@Plugin.Settings.Enabled"
+                ValueChanged="@((bool value) => Plugin.HandleAction("enabled", value))" />
+        <Slider Title="@($"Default target speed ({Plugin.SpeedUnitAbbreviation})")"
+                Description="Used when ETS2LA has only provided a speed-limit target and no higher user target exists yet."
+                Min="30" Max="9999" Step="1"
+                Value="@(Convert.ToSingle(Plugin.Settings.DefaultTargetSpeed))"
+                ValueChanged="@((float value) => Plugin.HandleAction("defaultTarget", value))" />
+        <Switch Title="Limit maximum target speed"
+                Description="When off, the plugin uses 9999 as the maximum target speed."
+                Value="@Plugin.LimitMaximum"
+                ValueChanged="@((bool value) => Plugin.HandleAction("limitMaximum", value))" />
+
+        @if (Plugin.LimitMaximum)
+        {
+            <Slider Title="@($"Maximum target speed ({Plugin.SpeedUnitAbbreviation})")"
+                    Description="The plugin will never restore a target above this value."
+                    Min="30" Max="9999" Step="1"
+                    Value="@(Convert.ToSingle(Plugin.Settings.MaximumTargetSpeed))"
+                    ValueChanged="@((float value) => Plugin.HandleAction("maximumTarget", value))" />
+        }
+        else
+        {
+            <p class="description">Maximum target speed: 9999</p>
+        }
+
+        <button class="button button-accent w-full!" @onclick="@(() => Plugin.HandleAction("resetTarget", null))">Reset target to 9999</button>
+
+        <Slider Title="Restore delay (ms)"
+                Description="A short delay lets ETS2LA finish processing the speed-limit event before this plugin restores the target."
+                Min="0" Max="500" Step="10"
+                Value="@(Convert.ToSingle(Plugin.Settings.RestoreDelayMs))"
+                ValueChanged="@((float value) => Plugin.HandleAction("restoreDelay", value))" />
+        <Switch Title="Restore matching limit during ticks"
+                Description="Also restores when the current target is detected at the current road speed limit."
+                Value="@Plugin.Settings.RestoreWhenTargetEqualsLimit"
+                ValueChanged="@((bool value) => Plugin.HandleAction("restoreMatchingLimit", value))" />
+
+        <Separator Label="Status" Class="mt-4" />
+        <div class="flex flex-col rounded-sm bg-control-bg-dark border border-bg-darker p-4 gap-2">
+            @foreach (var row in Plugin.StatusRows)
+            {
+                <div class="flex justify-between gap-4">
+                    <p class="text-description">@row.Key</p>
+                    <p>@row.Value</p>
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private SpeedLimitUnlockerPlugin? Plugin => SpeedLimitUnlockerPlugin.Instance;
+
+    private PeriodicTimer? _timer;
+    private CancellationTokenSource? _cts;
+
+    protected override void OnInitialized()
+    {
+        base.OnInitialized();
+        _cts = new CancellationTokenSource();
+        _ = RefreshLoop(_cts.Token);
+    }
+
+    private async Task RefreshLoop(CancellationToken token)
+    {
+        _timer = new PeriodicTimer(TimeSpan.FromMilliseconds(500));
+        try
+        {
+            while (await _timer.WaitForNextTickAsync(token))
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    public void Dispose()
+    {
+        _cts?.Cancel();
+        _timer?.Dispose();
+        _cts?.Dispose();
+    }
+}
